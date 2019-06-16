@@ -5,6 +5,7 @@
 #include "ProceduralMeshComponent.h"
 #include "HexCell.h"
 #include "Utils/HexMetrics.h"
+#include "HexGrid.h"
 
 // Sets default values
 AHexMesh::AHexMesh()
@@ -23,7 +24,7 @@ void AHexMesh::BeginPlay()
 
 }
 
-void AHexMesh::Triangulate(const TArray<AHexCell*> & cells)
+void AHexMesh::Clear()
 {
 	hexMesh->ClearAllMeshSections();
 
@@ -31,66 +32,20 @@ void AHexMesh::Triangulate(const TArray<AHexCell*> & cells)
 	normals.Empty();
 	triangles.Empty();
 	colors.Empty();
+}
 
-	for (int32 i = 0; i < cells.Num(); i++)
-	{
-		Triangulate(cells[i]);
-	}
+void AHexMesh::Apply()
+{
+	RecalculateNormals();
 
 	hexMesh->CreateMeshSection_LinearColor(0, vertices, triangles,
 		normals, TArray<FVector2D>(), colors,
 		TArray<FProcMeshTangent>(), true);
 }
 
-void AHexMesh::Triangulate(AHexCell * cell)
+void AHexMesh::SetHexGrid(AHexGrid* hexGrid)
 {
-	for (EHexDirection::Type d = EHexDirection::NE; d <= EHexDirection::NW; d = (EHexDirection::Type)(d + 1))
-	{
-		Triangulate(d, cell);
-	}
-}
-
-void AHexMesh::Triangulate(EHexDirection::Type direction, AHexCell* cell)
-{
-	FVector center = cell->GetActorLocation();
-
-	FVector v1 = center + HexMetrics::GetFirstSolidCorner(direction);
-	FVector v2 = center + HexMetrics::GetSecondSolidCorner(direction);
-
-	AddTriangle(center, v1, v2);
-	AddTriangleColor(cell->color);
-
-	if (direction <= EHexDirection::SE)
-	{
-		TriangulateConnection(direction, cell, v1, v2);
-	}
-}
-
-void AHexMesh::TriangulateConnection(EHexDirection::Type direction, AHexCell* cell, const FVector& v1, const FVector& v2)
-{
-	AHexCell* neighbor = cell->GetNeighbor(direction);
-	if (!neighbor)
-	{
-		//UE_LOG(LogTemp, Error, TEXT("%s"), *cell->coordinates.ToString());
-		return;
-	}
-
-	FVector bridge = HexMetrics::GetBridge(direction);
-	FVector v3 = v1 + bridge;
-	FVector v4 = v2 + bridge;
-	v3.Z = v4.Z = neighbor->GetElevation() * HexMetrics::elevationStep;
-
-	AddQuad(v1, v2, v3, v4);
-	AddQuadColor(cell->color, neighbor->color);
-
-	AHexCell* nextNeighbor = cell->GetNeighbor(HexDirection::Next(direction));
-	if (direction <= EHexDirection::E && nextNeighbor)
-	{
-		FVector v5 = v2 + HexMetrics::GetBridge(HexDirection::Next(direction));
-		v5.Z = nextNeighbor->GetElevation() * HexMetrics::elevationStep;
-		AddTriangle(v2, v4, v5);
-		AddTriangleColor(cell->color, neighbor->color, nextNeighbor->color);
-	}
+	this->hexGrid = hexGrid;
 }
 
 void AHexMesh::SetMaterial(UMaterialInstance* Material)
@@ -98,23 +53,20 @@ void AHexMesh::SetMaterial(UMaterialInstance* Material)
 	hexMesh->SetMaterial(0, Material);
 }
 
+
 void AHexMesh::AddTriangle(const FVector & v1, const FVector & v2, const FVector & v3)
 {
 	int32 vertexIndex = vertices.Num();
 
-	vertices.Add(v1);
-	vertices.Add(v2);
-	vertices.Add(v3);
-
-	normals.Add(FVector::UpVector);
-	normals.Add(FVector::UpVector);
-	normals.Add(FVector::UpVector);
+	vertices.Add(Perturb(v1));
+	vertices.Add(Perturb(v2));
+	vertices.Add(Perturb(v3));
 
 	triangles.Add(vertexIndex);
 	triangles.Add(vertexIndex + 1);
 	triangles.Add(vertexIndex + 2);
 }
-
+   
 void AHexMesh::AddTriangleColor(const FLinearColor& color)
 {
 	colors.Add(color);
@@ -133,10 +85,10 @@ void AHexMesh::AddQuad(const FVector& v1, const FVector& v2, const FVector& v3, 
 {
 	int32 vertexIndex = vertices.Num();
 
-	vertices.Add(v1);
-	vertices.Add(v2);
-	vertices.Add(v3);
-	vertices.Add(v4);
+	vertices.Add(Perturb(v1));
+	vertices.Add(Perturb(v2));
+	vertices.Add(Perturb(v3));
+	vertices.Add(Perturb(v4));
 
 	triangles.Add(vertexIndex);
 	triangles.Add(vertexIndex + 2);
@@ -160,4 +112,53 @@ void AHexMesh::AddQuadColor(const FLinearColor& c1, const FLinearColor& c2)
 	colors.Add(c1);
 	colors.Add(c2);
 	colors.Add(c2);
+}
+
+void AHexMesh::AddTriangleUnperturbed(const FVector& v1, const FVector& v2, const FVector& v3)
+{
+	int32 vertexIndex = vertices.Num();
+	vertices.Add(v1);
+	vertices.Add(v2);
+	vertices.Add(v3);
+	triangles.Add(vertexIndex);
+	triangles.Add(vertexIndex + 1);
+	triangles.Add(vertexIndex + 2);
+}
+
+FVector AHexMesh::Perturb(const FVector& position)
+{
+	FVector pos = position;
+	FLinearColor sample = hexGrid->SampleNoise(position);
+
+	pos.X += (sample.R * 2.f - 1.f) * HexMetrics::cellPerturbStrength;
+	pos.Y += (sample.G * 2.f - 1.f) * HexMetrics::cellPerturbStrength;
+
+	return pos;
+}
+
+void AHexMesh::RecalculateNormals()
+{
+	normals.Init(FVector::ZeroVector, vertices.Num());
+
+	for (int32 i = 0; i < triangles.Num(); i += 3)
+	{
+		FVector normal = CalculateNormal(
+			vertices[triangles[i]],
+			vertices[triangles[i + 1]],
+			vertices[triangles[i + 2]]);
+
+		normals[triangles[i]] += normal;
+		normals[triangles[i + 1]] += normal;
+		normals[triangles[i + 2]] += normal;
+	}
+
+	for (int32 i = 0; i < normals.Num(); i++)
+	{
+		normals[i] = normals[i].GetSafeNormal();
+	}
+}
+
+FVector AHexMesh::CalculateNormal(const FVector& A, const FVector& B, const FVector& C)
+{
+	return FVector::CrossProduct((C - A).GetSafeNormal(), (B - A).GetSafeNormal());
 }

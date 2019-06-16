@@ -6,11 +6,13 @@
 #include "Utils/HexMetrics.h"
 #include "HexMesh.h"
 #include "ProceduralMeshComponent.h"
+#include "Utils/HexLibrary.h"
+#include "HexGridChunk.h"
 
 // Sets default values
 AHexGrid::AHexGrid()
 {
- 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
+	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = false;
 
 	RootComponent = CreateDefaultSubobject<USceneComponent>("RootComponent");
@@ -20,39 +22,56 @@ AHexGrid::AHexGrid()
 void AHexGrid::BeginPlay()
 {
 	Super::BeginPlay();
-	
-	for (int32 x = 0, i = 0; x < width; x++)
+
+	cellCount = chunkCount * HexMetrics::chunkSize;
+
+	CreateChunks();
+	CreateCells();
+
+	for (int32 i = 0; i < chunks.Num(); i++)
+		chunks[i]->Refresh();
+}
+
+void AHexGrid::CreateChunks()
+{
+	for (int32 x = 0; x < chunkCount; x++)
 	{
-		for (int32 y = 0; y < height; y++)
+		for (int32 y = 0; y < chunkCount; y++)
+		{
+			AHexGridChunk* chunk = GetWorld()->SpawnActor<AHexGridChunk>(chunkPrefab, FTransform());
+			chunk->AttachToActor(this, FAttachmentTransformRules(EAttachmentRule::KeepWorld, true));
+			chunk->Init(hexMeshPrefab, TerrainMaterial, WaterMaterial, this);
+			chunks.Add(chunk);
+		}
+	}
+}
+
+void AHexGrid::CreateCells()
+{
+	for (int32 x = 0, i = 0; x < cellCount; x++)
+	{
+		for (int32 y = 0; y < cellCount; y++)
 		{
 			CreateCell(x, y, i++);
 		}
 	}
-
-	hexMesh = GetWorld()->SpawnActor<AHexMesh>(hexMeshPrefab, FTransform());
-	hexMesh->AttachToActor(this, FAttachmentTransformRules(EAttachmentRule::KeepWorld, true));
-
-	hexMesh->Triangulate(cells);
-	hexMesh->SetMaterial(Material);
 }
 
 void AHexGrid::CreateCell(int32 x, int32 y, int32 i)
 {
 	FVector position = FVector(
 		x * HexMetrics::outerRadius * 1.5f,
-		(y + x * 0.5f - x / 2) * HexMetrics::innerRadius * 2.f, 
+		(y + x * 0.5f - x / 2) * HexMetrics::innerRadius * 2.f,
 		0) * HexMetrics::hexScale;
-	
+
 	AHexCell * cell = GetWorld()->SpawnActor<AHexCell>(cellPrefab, position, FRotator(0));
 	cell->coordinates = FHexCoordinates::FromOffsetCoordinates(y, x);
 	cell->SetActorLabel(FString::FromInt(i));
-	cell->Initialize();
-
-	cell->color = DefaultColor;
+	cell->Initialize(this);
 
 	//cell->UpdateText(cell->coordinates.ToString());
-	cell->UpdateText(FString::FromInt(i));
-	//cell->UpdateText("");
+	//cell->UpdateText(FString::FromInt(i));
+	cell->UpdateText("");
 
 	if (y > 0)
 	{
@@ -62,46 +81,100 @@ void AHexGrid::CreateCell(int32 x, int32 y, int32 i)
 	{
 		if ((x & 1) == 0)
 		{
-			cell->SetNeighbor(EHexDirection::SE, cells[i - width]);
+			cell->SetNeighbor(EHexDirection::SE, cells[i - cellCount]);
 			if (y > 0)
 			{
-				cell->SetNeighbor(EHexDirection::SW, cells[i - width - 1]);
+				cell->SetNeighbor(EHexDirection::SW, cells[i - cellCount - 1]);
 			}
 		}
 		else
 		{
-			cell->SetNeighbor(EHexDirection::SW, cells[i - width]);
-			if (y < width - 1)
+			cell->SetNeighbor(EHexDirection::SW, cells[i - cellCount]);
+			if (y < cellCount - 1)
 			{
-				cell->SetNeighbor(EHexDirection::SE, cells[i - width + 1]);
+				cell->SetNeighbor(EHexDirection::SE, cells[i - cellCount + 1]);
 			}
 		}
 	}
-		
+
 	cells.Add(cell);
 	cells[i]->AttachToActor(this, FAttachmentTransformRules(EAttachmentRule::KeepWorld, true));
+
+	cell->SetElevation(0);
+
+	AddCellToChunk(x, y, cell);
 }
 
-void AHexGrid::UpdateCell(const FVector& position, const FLinearColor& newColor, const float& newElevation)
+void AHexGrid::AddCellToChunk(int32 x, int32 y, AHexCell* cell)
 {
+	int32 chunkX = x / HexMetrics::chunkSize;
+	int32 chunkY = y / HexMetrics::chunkSize;
+
+	int32 index = chunkX + chunkY * chunkCount;
+
+	AHexGridChunk* chunk = chunks[index];
+
+	int32 localX = x - chunkX * HexMetrics::chunkSize;
+	int32 localY = y - chunkY * HexMetrics::chunkSize;
+
+	chunk->AddCell(localX + localY * HexMetrics::chunkSize, cell);
+}
+
+void AHexGrid::UpdateCell(const FVector& position, const FLinearColor& newColor, bool updateTerrain, int32 terrainElevation, bool updateWater, int32 waterElevation, int32 brushSize)
+{
+	this->updateTerrain = updateTerrain;
+	this->updateWater = updateWater;
+
 	FVector localPos = GetTransform().InverseTransformPosition(position);
-	
 	FHexCoordinates coordinates = FHexCoordinates::FromPosition(localPos);
-	int32 index = coordinates.X + coordinates.Z * width + coordinates.Z / 2;
-		
-	if (!cells.IsValidIndex(index))
+
+	int32 centerX = coordinates.X;
+	int32 centerZ = coordinates.Z;
+
+	for (int32 r = 0, z = centerZ - brushSize; z <= centerZ; z++, r++)
 	{
-		UE_LOG(LogTemp, Error, TEXT("Invalid Cell Index!"));
+		for (int32 x = centerX - r; x <= centerX + brushSize; x++)
+		{
+			UpdateCell(x, z, newColor, terrainElevation, waterElevation);
+		}
+	}
+	for (int32 r = 0, z = centerZ + brushSize; z > centerZ; z--, r++)
+	{
+		for (int32 x = centerX - brushSize; x <= centerX + r; x++)
+		{
+			UpdateCell(x, z, newColor, terrainElevation, waterElevation);
+		}
+	}
+}
+
+void AHexGrid::UpdateCell(int32 x, int32 z, const FLinearColor& newColor, int32 terrainElevation, int32 waterElevation)
+{
+	FHexCoordinates coord = FHexCoordinates(x, z);
+
+	z = coord.Z;
+	x = coord.X + z / 2;
+
+	if (x < 0 || x >= cellCount
+		|| z < 0 || x >= cellCount)
 		return;
+
+	int32 index = x + z * cellCount;
+
+	if (!cells.IsValidIndex(index))
+		return;
+
+	if (updateTerrain)
+	{
+		cells[index]->SetColor(newColor);
+		cells[index]->SetElevation(terrainElevation);
 	}
 
-	cells[index]->color = newColor;
-	cells[index]->SetElevation(newElevation);
-
-	Refresh();
+	if (updateWater)
+		cells[index]->SetWaterLevel(waterElevation);
 }
 
-void AHexGrid::Refresh()
+FLinearColor AHexGrid::SampleNoise(const FVector& position)
 {
-	hexMesh->Triangulate(cells);
+	FVector pos = position * noiseScale;
+	return UHexLibrary::GetBilinearPixel(noiseSource, pos.X, pos.Y);
 }

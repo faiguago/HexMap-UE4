@@ -10,6 +10,7 @@
 
 class UProceduralMeshComponent;
 class AHexCell;
+class AHexGrid;
 
 UCLASS()
 class HEX_MAP_API AHexMesh : public AActor
@@ -19,7 +20,7 @@ class HEX_MAP_API AHexMesh : public AActor
 public:
 	// Sets default values for this actor's properties
 	AHexMesh();
-
+	
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
@@ -41,19 +42,18 @@ private:
 	UPROPERTY()
 	TArray<FLinearColor> colors;
 
+	UPROPERTY()
+	AHexGrid* hexGrid;
+
 public:
 
-	void Triangulate(const TArray<AHexCell*> & cells);
+	void Clear();
 
-	void SetMaterial(UMaterialInstance* Material);
+	void Apply();
 
-private:
+	void SetHexGrid(AHexGrid* hexGrid);
 	
-	void Triangulate(AHexCell * cell);
-
-	void Triangulate(EHexDirection::Type direction, AHexCell* cell);
-
-	void TriangulateConnection(EHexDirection::Type direction, AHexCell* cell, const FVector& v1, const FVector& v2);
+	void SetMaterial(UMaterialInstance* Material);
 
 	void AddTriangle(const FVector& v1, const FVector& v2, const FVector& sv3);
 
@@ -67,4 +67,13 @@ private:
 
 	void AddQuadColor(const FLinearColor& c1, const FLinearColor& c2);
 
+	void AddTriangleUnperturbed(const FVector& v1, const FVector& v2, const FVector& v3);
+	
+private:
+
+	void RecalculateNormals();
+
+	FVector Perturb(const FVector& position);
+
+	FVector CalculateNormal(const FVector& A, const FVector& B, const FVector& C);
 };

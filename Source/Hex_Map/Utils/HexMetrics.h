@@ -4,6 +4,17 @@
 
 #include "CoreMinimal.h"
 
+struct FEdgeVertices
+{
+	FVector v1, v2, v3, v4;
+
+	FEdgeVertices() { }
+
+	FEdgeVertices(FVector corner1, FVector corner2);
+
+	static FEdgeVertices TerraceLerp(const FEdgeVertices& a, const FEdgeVertices& b, int32 step);
+};
+
 namespace EHexDirection
 {
 	enum Type
@@ -14,6 +25,16 @@ namespace EHexDirection
 		SW,
 		W,
 		NW
+	};
+}
+
+namespace EHexEdge
+{
+	enum Type
+	{
+		Flat,
+		Slope,
+		Cliff
 	};
 }
 
@@ -28,13 +49,15 @@ public:
 	static EHexDirection::Type Next(EHexDirection::Type direction);
 };
 
-
 class HEX_MAP_API HexMetrics
 {
 public:
-	HexMetrics();
-	~HexMetrics();
 
+	HexMetrics() {}
+	~HexMetrics() {}
+	
+	static const int32 chunkSize;
+	
 	static const float hexScale;
 
 	static const float outerRadius;
@@ -47,6 +70,20 @@ public:
 
 	static const float elevationStep;
 
+	static const float cellPerturbStrength;
+
+	static const float elevationPerturbStrength;
+
+	static const float horizontalTerraceStepSize;
+
+	static const float verticalTerraceStepSize;
+
+	static const int32 terracesPerSlop;
+
+	static const int32 terraceSteps;
+
+	static const float waterElevationOffset;
+
 	static FVector GetFirstCorner(EHexDirection::Type direction);
 
 	static FVector GetSecondCorner(EHexDirection::Type direction);
@@ -57,6 +94,12 @@ public:
 
 	static FVector GetBridge(EHexDirection::Type direction);
 
+	static FVector TerraceLerp(const FVector& a, const FVector& b, int32 step);
+
+	static FLinearColor TerraceColorLerp(const FLinearColor& a, const FLinearColor& b, int32 step);
+
+	static EHexEdge::Type GetEdgeType(int32 elevation1, int32 elevation2);
+	
 private:
 
 	static const FVector* corners;
